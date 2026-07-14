@@ -65,44 +65,43 @@ class QJPEG:
     (8, 8)
     """
 
-    def __init__(self, patch_size: int = 256, wrap_H_layer: bool = True,
-                 shots: int = None, seed: int = None):
+    def __init__(self, patch_size: int = 256, wrap_H_layer: bool = True, shots: int = None, seed: int = None):
         assert patch_size & (patch_size - 1) == 0, '"patch_size" must be power of 2'
-        n_qubit = int(math.log2(patch_size)) * 2
-        assert 4 <= n_qubit <= 20, f'invalid "n_qubit": {n_qubit}'
-
         self.patch_size = patch_size
-        self.n_qubit = n_qubit
+        n_qubit = int(math.log2(patch_size)) * 2
+        assert 4 <= n_qubit <= 20, f'invalid input "n_qubit": {n_qubit}, should be in range [4, 20]'
+        self.n_qubit = n_qubit                  # i.e. k_in/max_qubit
+
         self.wrap_H_layer = wrap_H_layer
         self.shots = shots
         self.seed = seed
         # per-call state, set inside __call__
-        self._grid = None      # (n_patch_H, n_patch_W) tiling of the current channel
-        self._scale = 1        # down-sampling factor per axis (2 ** n_discard)
+        self._grid: tuple[int, int] = None      # (n_patch_H, n_patch_W) tiling of the current channel
+        self._scale = 1                         # down-sampling factor per axis (2 ** n_discard)
 
     def __call__(self, img: ndarray, n_discard: int = 2) -> ndarray:
-        assert isinstance(img, ndarray)
-        assert img.dtype in [np.float32, np.float64], \
-            'image must be a float array in [0, 1]'
-        assert 0 <= img.min() and img.max() <= 1.0, 'image must be in [0, 1]'
-        was_2d = (len(img.shape) == 2)
+        assert isinstance(img, ndarray) and img.dtype in [np.float32, np.float64], 'image must be a float ndarray'
+        assert 0 <= img.min() and img.max() <= 1.0, 'pixel value must be in [0, 1]'
+        orig_dtype = img.dtype
+        if orig_dtype != np.float64:    # tackle precision issue
+            img = img.astype(np.float64)
         if len(img.shape) == 3:
-            assert img.shape[0] in [3, 4], \
-                "colored image must be in shape (C, H, W) with C in [3, 4]"
+            assert img.shape[-1] in [3, 4], "colored image must be in shape (H, W, C) with C in [3, 4]"
+            is_grey = False
         else:
             assert len(img.shape) == 2, "grey image must be in shape (H, W)"
-            img = np.expand_dims(img, 0)
-        C, H, W = img.shape
-
+            is_grey = True
+            img = np.expand_dims(img, -1)
+        assert self.patch_size <= min(img.shape[:2]), '"patch_size" must be smaller than image size'
         k = self.n_qubit // 2   # qubits per axis == log2(patch_size)
-        assert isinstance(n_discard, int) and 1 <= n_discard <= k - 1, \
-            f'"n_discard" must be an int in [1, {k - 1}] for patch_size={self.patch_size}'
+        assert isinstance(n_discard, int) and 1 <= n_discard <= k - 1, f'"n_discard" must be an int in [1, {k - 1}] for patch_size={self.patch_size}'
         self._scale = 2 ** n_discard
 
-        # pad to whole patches, [C, H, W]
-        img_pad, pad_rs = self.pad(img)
+        H, W, C = img.shape
+        # pad to whole patches, [H, W, C]
+        img_pad, pads = self.pad(img)
         # split channels, C * [H, W]
-        channels = [img_pad[c] for c in range(C)]
+        channels = [img_pad[..., c] for c in range(C)]
         channels_processed: list[ndarray] = []
         # foreach C
         for channel in channels:
@@ -116,20 +115,21 @@ class QJPEG:
             devectors = self.devectorize(qvectors, norm)
             # unpatchify, [Ho, Wo]
             channel_unpatchify = self.unpachify(devectors)
-            # collect
             channels_processed.append(channel_unpatchify)
-        # merge channel, [C, Ho, Wo]
-        img_merged = np.stack(channels_processed, axis=0)
-        # trim pads, [C, Ho, Wo]
-        img_unpad = self.unpad(img_merged, pad_rs)
-        return img_unpad[0] if was_2d else img_unpad
+        # merge channel, [Ho, Wo, C]
+        img_merged = np.stack(channels_processed, axis=-1)
+        # trim pads, [Ho, Wo, C]
+        img_unpad = self.unpad(img_merged, pads)
+        # dtype back
+        img_unpad = img_unpad.astype(orig_dtype)
+        return img_unpad[..., 0] if is_grey else img_unpad
 
     def pad(self, img: ndarray):
-        """Zero-pad an ``[C, H, W]`` image so that H and W are whole multiples of
+        """Zero-pad an ``[H, W, C]`` image so that H and W are whole multiples of
         ``patch_size``, pasting the original content to the center. Returns the
         padded image together with the ``(top, bottom, left, right)`` pad widths
         (in original pixels), or ``None`` when no padding is needed."""
-        C, H, W = img.shape
+        H, W, C = img.shape
         n_patch_H = math.ceil(H / self.patch_size)
         n_patch_W = math.ceil(W / self.patch_size)
         H_ex = n_patch_H * self.patch_size
@@ -142,25 +142,24 @@ class QJPEG:
             math.floor(pad_H / 2), math.ceil(pad_H / 2),
             math.floor(pad_W / 2), math.ceil(pad_W / 2),
         )
-        # paste to center
-        img_ex = np.zeros(shape=(C, H_ex, W_ex), dtype=img.dtype)
-        img_ex[:, pads[0]:pads[0] + H, pads[2]:pads[2] + W] = img
+        img_ex = np.zeros(shape=(H_ex, W_ex, C), dtype=img.dtype)
+        img_ex[pads[0]:pads[0] + H, pads[2]:pads[2] + W, :] = img
         return img_ex, pads
 
     def unpad(self, img: ndarray, pads=None) -> ndarray:
-        """Trim the padding added by :meth:`pad` from an ``[C, H, W]`` image. The
+        """Trim the padding added by :meth:`pad` from an ``[H, W, C]`` image. The
         pad widths are scaled down by the down-sampling factor to match the
         processed (lower) resolution."""
         if not pads or all(e == 0 for e in pads):
             return img
         top, bottom, left, right = pads
         s = self._scale
-        C, H, W = img.shape
+        H, W, C = img.shape
         t = round(top / s)
         b = round(bottom / s)
         l = round(left / s)
         r = round(right / s)
-        return img[:, t:(H - b) if b else H, l:(W - r) if r else W]
+        return img[t:(H - b) if b else H, l:(W - r) if r else W, :]
 
     def pachify(self, img: ndarray) -> ndarray:
         """Split a single-channel ``[H, W]`` image into non-overlapping
@@ -171,8 +170,7 @@ class QJPEG:
         assert H % P == 0 and W % P == 0
         nH, nW = H // P, W // P
         self._grid = (nH, nW)
-        patches = img.reshape(nH, P, nW, P).swapaxes(1, 2).reshape(nH * nW, P, P)
-        return patches
+        return img.reshape(nH, P, nW, P).swapaxes(1, 2).reshape(nH * nW, P, P)
 
     def unpachify(self, patches: ndarray) -> ndarray:
         """Re-assemble ``[B, p, p]`` (processed) patches into a single-channel
@@ -180,10 +178,9 @@ class QJPEG:
         nH, nW = self._grid
         B, p, _ = patches.shape
         assert B == nH * nW
-        img = patches.reshape(nH, nW, p, p).swapaxes(1, 2).reshape(nH * p, nW * p)
-        return img
+        return patches.reshape(nH, nW, p, p).swapaxes(1, 2).reshape(nH * p, nW * p)
 
-    def vectorize(self, patches: ndarray) -> tuple:
+    def vectorize(self, patches: ndarray) -> tuple[ndarray, ndarray]:
         """Vectorize ``[B, P, P]`` patches to amplitude vectors ``[B, P**2]``.
 
         Each patch is flattened (row-major) and encoded as a normalized quantum
@@ -194,24 +191,22 @@ class QJPEG:
         map to a zero vector.
         """
         B = patches.shape[0]
-        vect = patches.reshape(B, -1).astype(np.float64)
+        vect = patches.reshape(B, -1)
         norm = vect.sum(axis=1)
-        amps = np.zeros_like(vect)
+        amps = np.zeros_like(vect, dtype=patches.dtype)
         nz = norm > 0
         amps[nz] = np.sqrt(vect[nz] / norm[nz, None])
         return amps, norm
 
-    def devectorize(self, vectors: ndarray, norm: object) -> ndarray:
+    def devectorize(self, vectors: ndarray, norm: ndarray) -> ndarray:
         """Decode output probability vectors ``[B, p**2]`` back into intensity
         patches ``[B, p, p]``. The probabilities are rescaled by the stored patch
         intensity ``norm`` and by the pixel-count ratio so that the mean intensity
         of each patch is preserved by the down-sampling."""
-        vectors = np.asarray(vectors)
         B, d = vectors.shape
         p = int(round(math.sqrt(d)))
         n_in = self.patch_size ** 2
         n_out = d
-        norm = np.asarray(norm)
         patches = vectors * norm[:, None] * (n_out / n_in)
         return patches.reshape(B, p, p)
 
@@ -226,51 +221,62 @@ class QJPEG:
         (row / column) half, and (vi) reads the probabilities of the remaining
         ``n2 = n0 - 2 * n_discard`` qubits.
         """
-        n0 = self.n_qubit
-        ntilde = n_discard
-        n1 = n0 - ntilde
-        n2 = n0 - 2 * ntilde
-        d = 2 ** n2
-        q = list(range(n0))
-        # qubits kept for measurement (drop the top n_discard qubits of each half)
-        measured = [i for i in range(n1) if not (n0 // 2 - ntilde <= i <= n0 // 2 - 1)]
 
-        vectors = np.asarray(vectors)
+        '''
+        LSB                           MSB
+        |--------------nq---------------|
+        |------ki-------|------ki-------|
+        |---ko---| drop |---ko---| drop |
+        '''
+        nq = self.n_qubit       # all qubits
+        ki = nq // 2            # half qubits (aka. k_in)
+        ko = ki - n_discard     # half qubits kept (aka. k_out)
+        qv = list(range(nq))
+        # drop the top(MSB)/last n_discard qubits of each half/axis
+        dropped = [i for p in range(2) for i in range(ki * p + ko, ki * p + ki)]
+        # qubits kept for measurement
+        measured = [i for i in qv if i not in dropped]
+
         B = vectors.shape[0]
-        out = np.zeros((B, d), dtype=np.float64)
+        d = 2 ** (nq - 2 * n_discard)   # dim out
+        out = np.zeros((B, d), dtype=vectors.dtype)
         rng = np.random.default_rng(self.seed) if self.shots else None
-
         for b in range(B):
             vec = vectors[b]
-            if not np.any(vec):     # all-zero (empty) patch -> stays empty
-                continue
+            if not np.any(vec): continue
+
+            prog = QProg(nq)
+            # data enc
             enc = Encode()
-            enc.amplitude_encode(q, list(vec))
-            prog = QProg(n0)
+            enc.amplitude_encode(qv, list(vec))
             prog << enc.get_circuit()
-            if self.wrap_H_layer:
-                for qi in q:
+            # QFT
+            if self.wrap_H_layer:   # 抵消QFT中的Hlayer
+                for qi in qv:
                     prog << H(qi)
-            prog << QFT(q[:n0])
-            prog << QFT(q[:n1]).dagger()
-            if self.wrap_H_layer:
+            prog << QFT(qv)
+            # 舍去列比特 (末尾之前ntilde个)
+            # iQFT
+            prog << QFT(qv[:nq - n_discard]).dagger()
+            if self.wrap_H_layer:   # 抵消iQFT中的Hlayer
                 for qi in measured:
                     prog << H(qi)
+            # 舍去行比特 (中部之前ntilde个，仅保留measured)
+
             machine = CPUQVM()
             machine.run(prog, 1)
             prob_dict = machine.result().get_prob_dict(measured)
-            probs = self._prob_dict_to_vector(prob_dict, measured, d)
+            probs = self._prob_dict_to_vector(prob_dict, len(measured), d, vectors.dtype)
             if self.shots:
                 probs = rng.multinomial(self.shots, probs) / self.shots
             out[b] = probs
         return out
 
     @staticmethod
-    def _prob_dict_to_vector(prob_dict: dict, qubits: list, dim: int) -> ndarray:
+    def _prob_dict_to_vector(prob_dict: dict, n: int, dim: int, dtype=np.float64) -> ndarray:
         """Convert a ``get_prob_dict`` result into a dense vector indexed so that
         ``qubits[0]`` is the least-significant bit (matching the QPIE encoding)."""
-        n = len(qubits)
-        vec = np.zeros(dim, dtype=np.float64)
+        vec = np.zeros(dim, dtype=dtype)
         for key, val in prob_dict.items():
             idx = 0
             for k in range(n):

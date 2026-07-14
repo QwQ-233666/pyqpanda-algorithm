@@ -1,107 +1,82 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Demo: Quantum JPEG (QJPEG) image down-sampling.
+Demo: Quantum JPEG (QJPEG) image downsampling.
 
-Loads a sample image, down-samples it with the QJPEG quantum circuit at several
-compression levels, and saves a side-by-side comparison against classical
-box-averaging (which QJPEG reproduces when the Hadamard layers are enabled).
+The given image is down-sampled at several compression levels and compared
+with classical box-averaging.
 
 Run:
-    python demo_QJPEG.py
+    python demo_QJPEG.py (default -P equals -S, no tiling)
+    python demo_QJPEG.py -P 256 -S 512 (large canvas with small patch, force tiling)
 """
 
-import sys
 from pathlib import Path
+from argparse import ArgumentParser
+from time import perf_counter
 
 import numpy as np
+import matplotlib.pyplot as plt
 
-# make `pyqpanda_alg` importable when running this file directly
+import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from pyqpanda_alg.QJEPG import QJPEG
-
-try:
-    from PIL import Image
-    _HAS_PIL = True
-except ImportError:
-    _HAS_PIL = False
+from utils import load_img, psnr, box_downsample, QJPEG, IMG_DIR, OUT_DIR
 
 
-HERE = Path(__file__).resolve().parent
-IMG_DIR = HERE / 'img'
-OUT_DIR = HERE / 'output'
+def save_filename(args):
+    I: Path = args.input
+    S = args.img_size
+    P = args.patch_size
+    sfx = ''
+    sfx += f'_{P}' if S == P else f'_P{P}_S{S}'
+    if args.no_H_layer is False:
+       sfx += '_noH'
+    return f'{I.stem}-QJPEG{sfx}.png'
 
 
-def load_gray(path: Path, size: int) -> np.ndarray:
-    """Load an image as a size x size float32 grayscale array in [0, 1]."""
-    img = Image.open(path).convert('L').resize((size, size))
-    return (np.asarray(img, dtype=np.float32) / 255.0)
+def run(args):
+    img = load_img(args.input, args.img_size)
+    print(f'Input img_shape: {img.shape}')
 
+    qjpeg = QJPEG(patch_size=args.patch_size, wrap_H_layer=args.no_H_layer)
+    print(f'QJPEG patch_size: {qjpeg.patch_size}')
 
-def synthetic_gray(size: int) -> np.ndarray:
-    """A smooth synthetic image, used when Pillow / sample images are absent."""
-    x = np.linspace(0, 3 * np.pi, size)
-    xx, yy = np.meshgrid(x, x)
-    img = (np.sin(xx) * np.cos(yy) + np.sin(xx / 2)) * 0.25 + 0.5
-    return img.astype(np.float32)
-
-
-def box_downsample(img: np.ndarray, factor: int) -> np.ndarray:
-    P = img.shape[0]
-    p = P // factor
-    return img.reshape(p, factor, p, factor).mean(axis=(1, 3))
-
-
-def psnr(a: np.ndarray, b: np.ndarray) -> float:
-    mse = np.mean((a - b) ** 2)
-    return float('inf') if mse == 0 else 10 * np.log10(1.0 / mse)
-
-
-def main():
-    size = 128
-    src = IMG_DIR / 'OriginQ logo.jpg'
-    if _HAS_PIL and src.exists():
-        img = load_gray(src, size)
-        title = src.name
-    else:
-        img = synthetic_gray(size)
-        title = 'synthetic'
-    print(f'Input image: {title}  shape={img.shape}  range=[{img.min():.3f}, {img.max():.3f}]')
-
-    # Down-sample the whole image as a single patch (most faithful to the paper).
-    qjpeg = QJPEG(patch_size=size, wrap_H_layer=True)
-
-    results = {}
+    results: dict[int, np.ndarray] = {}
     for n_discard in (1, 2, 3):
+        ts_start = perf_counter()
         out = qjpeg(img, n_discard=n_discard)
         ref = box_downsample(img, 2 ** n_discard)
-        print(f'n_discard={n_discard}: {img.shape} -> {out.shape}  '
-              f'PSNR(QJPEG vs box-avg)={psnr(out, ref):.1f} dB')
+        ts_end = perf_counter()
         results[n_discard] = out
+        print(f'n_discard={n_discard}: {img.shape} -> {out.shape} | PSNR={psnr(out, ref):.2f} dB ({ts_end - ts_start:.3f}s)')
 
-    # Save a comparison figure if matplotlib is available.
-    try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        OUT_DIR.mkdir(exist_ok=True)
-        n = 1 + len(results)
-        fig, axes = plt.subplots(1, n, figsize=(3 * n, 3))
-        axes[0].imshow(img, cmap='gray', vmin=0, vmax=1)
-        axes[0].set_title(f'input {img.shape[0]}x{img.shape[1]}')
-        for ax, (nd, out) in zip(axes[1:], results.items()):
-            ax.imshow(out, cmap='gray', vmin=0, vmax=1)
-            ax.set_title(f'QJPEG n_discard={nd}\n{out.shape[0]}x{out.shape[1]}')
-        for ax in axes:
-            ax.axis('off')
-        fig.tight_layout()
-        path = OUT_DIR / 'demo_QJPEG.png'
-        fig.savefig(path, dpi=120, bbox_inches='tight')
-        print(f'Saved comparison figure to {path}')
-    except ImportError:
-        print('matplotlib not available; skipping figure.')
+    N = 1 + len(results)
+    fig, axes = plt.subplots(1, N, figsize=(3 * N, 3))
+    axes[0].imshow(img, vmin=0, vmax=1)
+    axes[0].set_title(f'original {img.shape[0]}x{img.shape[1]}')
+    axes[0].axis('off')
+    for ax, (nd, out) in zip(axes[1:], results.items()):
+        ax.imshow(np.clip(out, 0, 1), vmin=0, vmax=1)
+        ax.set_title(f'QJPEG {out.shape[0]}x{out.shape[1]}\nn_discard={nd}')
+        ax.axis('off')
+    fig.tight_layout()
+    OUT_DIR.mkdir(exist_ok=True)
+    fp = OUT_DIR / save_filename(args)
+    fig.savefig(fp, dpi=300, bbox_inches='tight')
+    print(f'Saved comparison figure to {fp}')
 
 
 if __name__ == '__main__':
-    main()
+    parser = ArgumentParser()
+    parser.add_argument('-I', '--input', default=IMG_DIR / 'Border Collie.webp', type=Path)
+    parser.add_argument('-S', '--img_size', default=256, type=int)
+    parser.add_argument('-P', '--patch_size', default=None, type=int)
+    parser.add_argument('-nH', '--no_H_layer', action='store_false', default='disable H layer, only experimental use')
+    args = parser.parse_args()
+
+    args.patch_size = args.patch_size or args.img_size
+
+    if args.img_size > 256:
+        print(f'>> [WARN] the first image size will exceed {args.img_size * 2**2}, might be VERY SLOW!! :(')
+
+    run(args)

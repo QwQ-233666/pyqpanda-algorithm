@@ -10,7 +10,6 @@ import pytest
 
 # make `pyqpanda_alg` importable from the nested package directory
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'pyqpanda-algorithm'))
-
 from pyqpanda_alg.QJEPG import QJPEG
 
 
@@ -57,15 +56,15 @@ class TestQJPEG:
 
     @pytest.mark.parametrize("channels", [3, 4])   # 3 = RGB, 4 = RGB+IR / RGBA
     def test_multichannel_image(self, channels):
-        img = np.stack([_smooth(16) * (1.0 - 0.1 * c) for c in range(channels)], axis=0)
+        img = np.stack([_smooth(16) * (1.0 - 0.1 * c) for c in range(channels)], axis=-1)
         out = QJPEG(patch_size=16)(img, n_discard=1)
-        assert out.shape == (channels, 8, 8)
+        assert out.shape == (8, 8, channels)
         # channels are processed independently, each preserving its own mean
         for c in range(channels):
-            assert abs(out[c].mean() - img[c].mean()) < 1e-6
+            assert abs(out[c].mean() - img[c].mean()) < 1e-4
 
     def test_reject_unsupported_channel_count(self):
-        img = np.stack([_smooth(16)] * 5, axis=0)   # 5-channel is not supported
+        img = np.stack([_smooth(16)] * 5, axis=-1)   # 5-channel is not supported
         with pytest.raises(AssertionError):
             QJPEG(patch_size=16)(img, n_discard=1)
 

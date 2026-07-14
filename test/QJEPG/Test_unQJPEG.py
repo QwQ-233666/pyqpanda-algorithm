@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# make `pyqpanda_alg` importable from the nested package directory
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'pyqpanda-algorithm'))
-
 from pyqpanda_alg.QJEPG import QJPEG, unQJPEG
 
 
@@ -73,9 +73,9 @@ class TestUnQJPEG:
 
     @pytest.mark.parametrize("channels", [3, 4])   # 3 = RGB, 4 = RGB+IR / RGBA
     def test_multichannel_image(self, channels):
-        img = np.stack([_smooth(8) * (1.0 - 0.1 * c) for c in range(channels)], axis=0)
+        img = np.stack([_smooth(8) * (1.0 - 0.1 * c) for c in range(channels)], axis=-1)
         out = unQJPEG()(img, n_append=1, patch_size=8)
-        assert out.shape == (channels, 16, 16)
+        assert out.shape == (16, 16, channels)
 
     def test_invalid_patch_size(self):
         img = _smooth(8)

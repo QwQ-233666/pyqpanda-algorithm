@@ -8,9 +8,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'pyqpanda-algorithm'))
-
-from pyqpanda_alg.QKD import BB84
-from pyqpanda_alg.QKD.QKD import QKDInsecureError
+from pyqpanda_alg.QKD import BB84, QKDInsecureError, mean
 
 
 class TestBB84:
@@ -36,7 +34,7 @@ class TestBB84:
         r = BB84(eve_prob=1.0, seed=4).distribute(4000)
         assert r.qber > 0.12                     # intercept-resend -> ~25 %
         assert r.secure is False
-        assert r.extra['eve_rate'] == 1.0
+        assert all(r.extra['eve_intercepts'])
 
     def test_keygen_aborts_under_full_interception(self):
         with pytest.raises(QKDInsecureError):
@@ -44,7 +42,7 @@ class TestBB84:
 
     def test_partial_eve_probability_is_applied_per_round(self):
         r = BB84(eve_prob=0.5, seed=10).distribute(6000)
-        assert abs(r.extra['eve_rate'] - 0.5) < 0.03
+        assert abs(mean(r.extra['eve_intercepts']) - 0.5) < 0.03
         assert 0.07 < r.qber < 0.18              # expected QBER ~= eve_prob / 4
 
     def test_bb84_bits_are_reproducible(self):

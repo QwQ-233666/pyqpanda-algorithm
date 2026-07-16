@@ -1,4 +1,3 @@
-# ~ref: https://en.wikipedia.org/wiki/BB84
 """
 BB84 (Bennett & Brassard, 1984) -- the original prepare-and-measure protocol.
 
@@ -8,37 +7,49 @@ own random basis.  During sifting they keep only the rounds where their bases
 match; on those the two bits are identical in an ideal channel.  An
 intercept-resend eavesdropper, forced to guess the basis, corrupts 25 % of the
 sifted bits and is exposed by the QBER.
+
+~ref: https://en.wikipedia.org/wiki/BB84
+~ref: https://arxiv.org/abs/2003.06557
 """
 
-import numpy as np
-
-from .QKD import QKD, Z_BASIS, X_BASIS
+from .QKD import QKD
 
 
 class BB84(QKD):
 
-    name = 'BB84'
-    sift_efficiency = 0.5      # bases agree half of the time
+    '''最基础的非纠缠QKD协议，双基四态'''
+
+    sift_efficiency = 0.5
 
     def _exchange(self, n_raw: int) -> dict:
-        rng = self._rng
-        a_bits = rng.integers(0, 2, n_raw)      # Alice's random bits
-        a_basis = rng.integers(0, 2, n_raw)     # Alice's random bases
-        b_basis = rng.integers(0, 2, n_raw)     # Bob's random bases
-        eve = self._eve_mask(n_raw)
-        e_basis = rng.integers(0, 2, n_raw) if np.any(eve) else None
+        eve     = self._eve_mask(n_raw)
+        a_bits  = self._randbits(n_raw)     # KEY BITS
+        a_basis = self._randbits(n_raw)
+        b_basis = self._randbits(n_raw)
+        e_basis = self._randbits(n_raw) if any(eve) else None
 
-        bob = np.empty(n_raw, dtype=int)
+        bob  = n_raw * [-1]
+        keep = n_raw * [False]
         for i in range(n_raw):
-            prep_basis, prep_bit = int(a_basis[i]), int(a_bits[i])
+            # 1) Alice选值v和基B，制备并发送量子态 |phi> = B|v>
+            prep_basis, prep_bit = a_basis[i], a_bits[i]
+            phi = self._basis_prepare(prep_basis, prep_bit)
+            # 2) Eve拦截，选基测量 |phi> 并重放测量结果
             if eve[i]:
-                # Eve measures in a random basis and resends what she found
-                eve_bit = self._pm(prep_basis, prep_bit, int(e_basis[i]))
-                prep_basis, prep_bit = int(e_basis[i]), eve_bit
-            out = self._pm(prep_basis, prep_bit, int(b_basis[i]))
-            bob[i] = self._maybe_flip(out)
+                intercept_basis = e_basis[i]
+                eve_bit = self._basis_measure(phi, intercept_basis)
+                phi = self._basis_prepare(intercept_basis, eve_bit)
+            # 3) Bob选基并测量 |phi>
+            out = self._basis_measure(phi, b_basis[i])
+            # 4) Alice和Bob互相告知自己所选的基，若同基则保留测量值
+            if a_basis[i] == b_basis[i]:
+                bob[i], keep[i] = out, True
 
-        keep = a_basis == b_basis                # sift: matching bases
-        return dict(alice=a_bits, bob=bob, keep=keep,
-                    extra={'eve_intercepts': int(eve.sum()),
-                           'eve_rate': float(eve.mean())})
+        return {
+            'alice': a_bits,
+            'bob': bob,
+            'keep': keep,
+            'extra': {
+                'eve_intercepts': eve,
+            }
+        }

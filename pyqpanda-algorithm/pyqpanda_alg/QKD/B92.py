@@ -1,4 +1,3 @@
-# ~ref: https://en.wikipedia.org/wiki/B92_protocol
 """
 B92 (Bennett, 1992) -- a minimalist prepare-and-measure protocol that needs only
 two non-orthogonal states.
@@ -14,43 +13,54 @@ basis (Z or X) and keeps only *conclusive* outcomes:
 All other outcomes are inconclusive and discarded, giving a ~25 % sift rate in the
 ideal case.  Because the two states are non-orthogonal, no measurement can
 distinguish them deterministically -- which is exactly what keeps Eve out.
-"""
 
-import numpy as np
+~ref: https://en.wikipedia.org/wiki/B92_protocol
+~ref: http://home.ustc.edu.cn/~gongsiqiu/_book/6-Quantum%20communication/Quantum%20Cryptography%20Using%20Any%20Two%20Nonorthogonal%20States.html
+"""
 
 from .QKD import QKD, Z_BASIS, X_BASIS
 
 
 class B92(QKD):
 
-    name = 'B92'
-    sift_efficiency = 0.25     # conclusive a quarter of the time
+    '''BB84的简化版，双基双态；通过基不一致反推'''
+
+    sift_efficiency = 0.25
 
     def _exchange(self, n_raw: int) -> dict:
-        rng = self._rng
-        a_bits = rng.integers(0, 2, n_raw)      # Alice's key bits
-        b_basis = rng.integers(0, 2, n_raw)     # Bob's random measurement bases
-        eve = self._eve_mask(n_raw)
-        e_basis = rng.integers(0, 2, n_raw) if np.any(eve) else None
+        eve     = self._eve_mask(n_raw)
+        a_bits  = self._randbits(n_raw)     # KEY BITS
+        b_basis = self._randbits(n_raw)
+        e_basis = self._randbits(n_raw) if any(eve) else None
 
-        bob = np.zeros(n_raw, dtype=int)
-        keep = np.zeros(n_raw, dtype=bool)
+        bob  = n_raw * [-1]
+        keep = n_raw * [False]
         for i in range(n_raw):
-            # bit 0 -> |0> (Z, value 0); bit 1 -> |+> (X, value 0)
+            # 1) Alice选值v，依规则使用对应的基B，制备并发送量子态 |phi> = B|0>
+            #    v=0: 用Z基制备 |phi> = I|0> = |0>
+            #    v=1: 用X基制备 |phi> = H|0> = |+>
             prep_basis = X_BASIS if a_bits[i] == 1 else Z_BASIS
-            prep_bit = 0
+            prep_bit = 0    # 始终是0
+            phi = self._basis_prepare(prep_basis, prep_bit)
+            # 2) Eve拦截，选基测量 |phi> 并重放测量结果
             if eve[i]:
-                eve_bit = self._pm(prep_basis, prep_bit, int(e_basis[i]))
-                prep_basis, prep_bit = int(e_basis[i]), eve_bit
+                intercept_basis = e_basis[i]
+                eve_bit = self._basis_measure(phi, intercept_basis)
+                phi = self._basis_prepare(intercept_basis, eve_bit)
+            # 3) Bob选基并测量 |phi>
+            out = self._basis_measure(phi, b_basis[i])
+            # 4) 若测量值为1则保留(只可能是制备基-测量基不同导致)，当前比特是否被保留
+            if out == 1:    # 与prep_bit相反
+                if b_basis[i] == Z_BASIS:
+                    bob[i], keep[i] = 1, True   # Bob用Z基测出了1，说明Alice用的X基制备的v=1
+                elif b_basis[i] == X_BASIS:
+                    bob[i], keep[i] = 0, True   # Bob用X基测出了1，说明Alice用的Z基制备的v=0
 
-            out = self._maybe_flip(self._pm(prep_basis, prep_bit, int(b_basis[i])))
-
-            if b_basis[i] == Z_BASIS and out == 1:
-                bob[i], keep[i] = 1, True       # |1> in Z rules out |0>  => bit 1
-            elif b_basis[i] == X_BASIS and out == 1:
-                bob[i], keep[i] = 0, True       # |-> in X rules out |+>  => bit 0
-            # otherwise inconclusive -> discarded
-
-        return dict(alice=a_bits, bob=bob, keep=keep,
-                    extra={'eve_intercepts': int(eve.sum()),
-                           'eve_rate': float(eve.mean())})
+        return {
+            'alice': a_bits,
+            'bob': bob,
+            'keep': keep,
+            'extra': {
+                'eve_intercepts': eve,
+            }
+        }

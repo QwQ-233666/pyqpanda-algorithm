@@ -1,4 +1,3 @@
-# ~ref: https://en.wikipedia.org/wiki/SARG04
 """
 SARG04 (Scarani, Acin, Ribordy & Gisin, 2004) -- same four states as BB84 but a
 different sifting rule that hardens it against photon-number-splitting attacks.
@@ -16,49 +15,60 @@ the decoy:
 His own outcome can never be orthogonal to the true state, so the exclusion is
 unambiguous and he recovers Alice's basis (the key bit).  The ideal sift rate is
 ~25 %.
-"""
 
-import numpy as np
+~ref: https://en.wikipedia.org/wiki/SARG04
+~ref: https://arxiv.org/abs/quant-ph/0211131
+"""
 
 from .QKD import QKD
 
 
 class SARG04(QKD):
 
-    name = 'SARG04'
+    '''BB84+B92缝合，双基四态；通过基不一致反推'''
+
     sift_efficiency = 0.25
 
     def _exchange(self, n_raw: int) -> dict:
-        rng = self._rng
-        send_basis = rng.integers(0, 2, n_raw)   # Alice's basis == her KEY BIT
-        send_val = rng.integers(0, 2, n_raw)      # which state within that basis
-        decoy_val = rng.integers(0, 2, n_raw)     # decoy state (from the conjugate basis)
-        b_basis = rng.integers(0, 2, n_raw)       # Bob's random measurement basis
-        eve = self._eve_mask(n_raw)
-        e_basis = rng.integers(0, 2, n_raw) if np.any(eve) else None
+        eve     = self._eve_mask(n_raw)
+        a_basis = self._randbits(n_raw)  # Alice's basis = KEY BIT
+        a_bits  = self._randbits(n_raw)  # Alice's prepare bits
+        d_bits  = self._randbits(n_raw)  # Alice's decoy bits (assumed from the conjugate basis)
+        b_basis = self._randbits(n_raw)
+        e_basis = self._randbits(n_raw) if any(eve) else None
 
-        alice = send_basis.copy()                 # the key bit Alice intends
-        bob = np.zeros(n_raw, dtype=int)
-        keep = np.zeros(n_raw, dtype=bool)
+        bob   = n_raw * [-1]
+        keep  = n_raw * [False]
         for i in range(n_raw):
-            prep_basis, prep_bit = int(send_basis[i]), int(send_val[i])
+            # 1) Alice选值v和基B，制备并发送量子态 |phi> = B|v>
+            prep_basis, prep_bit = a_basis[i], a_bits[i]
+            phi = self._basis_prepare(prep_basis, prep_bit)
+            # 2) Eve拦截，选基测量 |phi> 并重放测量结果
             if eve[i]:
-                eve_bit = self._pm(prep_basis, prep_bit, int(e_basis[i]))
-                prep_basis, prep_bit = int(e_basis[i]), eve_bit
+                intercept_basis = e_basis[i]
+                eve_bit = self._basis_measure(phi, intercept_basis)
+                phi = self._basis_prepare(intercept_basis, eve_bit)
+            # 3) Bob选基并测量 |phi>
+            out = self._basis_measure(phi, b_basis[i])
+            # 4) Alice告知Bob刚才制备的 |phi> 来自于集合 {|0>/|1>, |+>/|->}
+            #    其中一个是正确答案，另一个是相反基的诱骗答案 (故Alice没有直接公布基)
+            #    Bob通过基不一致反推检查自己的测量结果，并告知Alice当前比特是否被保留
+            # 若Alice宣告 {|0>, |+>}, 则 Bob 必须测出 1(Z基) 或 -(X基) 才能确定值为v=0
+            # 若Alice宣告 {|0>, |->}, 则 Bob 必须测出 1(Z基) 或 +(X基) 才能确定值为v=1/0
+            # 若Alice宣告 {|1>, |+>}, 则 Bob 必须测出 0(Z基) 或 -(X基) 才能确定值为v=0/1
+            # 若Alice宣告 {|1>, |->}, 则 Bob 必须测出 0(Z基) 或 +(X基) 才能确定值为v=1
+            mismatch_sent = b_basis[i] == a_basis[i] and out != a_bits[i]
+            mismatch_decoy = b_basis[i] == 1 - a_basis[i] and out != d_bits[i]
+            if mismatch_decoy and not mismatch_sent:
+                bob[i], keep[i] = a_basis[i], True
+            elif mismatch_sent and not mismatch_decoy:
+                bob[i], keep[i] = 1 - a_basis[i], True
 
-            out = self._maybe_flip(self._pm(prep_basis, prep_bit, int(b_basis[i])))
-
-            # Bob's outcome (b_basis, out) excludes an announced state when it is
-            # orthogonal to it: same basis, opposite value. He concludes the
-            # *other*, non-excluded state and reads off its basis as the key bit.
-            other_basis = 1 - int(send_basis[i])
-            excl_sent = (int(b_basis[i]) == int(send_basis[i])) and (out != int(send_val[i]))
-            excl_decoy = (int(b_basis[i]) == other_basis) and (out != int(decoy_val[i]))
-            if excl_decoy and not excl_sent:
-                bob[i], keep[i] = int(send_basis[i]), True      # concluded Alice's state
-            elif excl_sent and not excl_decoy:
-                bob[i], keep[i] = other_basis, True             # concluded the decoy (an error)
-
-        return dict(alice=alice, bob=bob, keep=keep,
-                    extra={'eve_intercepts': int(eve.sum()),
-                           'eve_rate': float(eve.mean())})
+        return {
+            'alice': a_basis,
+            'bob': bob,
+            'keep': keep,
+            'extra': {
+                'eve_intercepts': eve,
+            }
+        }

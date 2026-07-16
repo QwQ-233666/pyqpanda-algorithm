@@ -8,9 +8,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'pyqpanda-algorithm'))
-
-from pyqpanda_alg.QKD import B92
-from pyqpanda_alg.QKD.QKD import QKDInsecureError
+from pyqpanda_alg.QKD import B92, QKDInsecureError
 
 
 class TestB92:

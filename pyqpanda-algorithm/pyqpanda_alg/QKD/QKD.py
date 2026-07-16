@@ -17,7 +17,10 @@ key.  Every protocol here follows the same three stages
     3. parameter estimation   -- a random subset of the sifted bits is disclosed
                                  to estimate the quantum bit-error rate (QBER); a
                                  QBER above the protocol threshold reveals Eve and
-                                 the key is discarded.
+                                 the key is discarded;
+    4. privacy amplification -- the undisclosed candidate key is compressed with
+                                 a random binary Toeplitz hash, removing partial
+                                 information that Eve may have learned.
 
 Sub-classes only implement :meth:`_exchange`, which performs stages 1-2 for a
 block of raw qubits and returns Alice's/Bob's raw bits plus the sift mask.  The
@@ -53,7 +56,7 @@ class QKDResult:
     n_raw: int
     alice_key: str          # Alice's sifted bits (before public disclosure), as '0'/'1'
     bob_key: str            # Bob's sifted bits
-    key: str                # final shared secret (sifted key minus the disclosed sample)
+    key: str                # candidate key after disclosure, before privacy amplification
     sift_rate: float        # kept fraction = len(sifted) / n_raw
     qber: float             # estimated quantum bit-error rate on the disclosed sample
     secure: bool            # qber <= threshold
@@ -69,12 +72,19 @@ class QKD:
     """Base class: quantum transmission helpers, sifting, QBER estimation, keygen.
 
     Args:
-        eavesdropper: if ``True`` an intercept-resend Eve sits on the channel.
+        eve_prob: probability that Eve intercepts and resends each transmitted
+            qubit. ``0`` disables Eve and ``1`` attacks every round.
         error_rate:   probability that the channel flips a received bit (noise).
         sample_fraction: fraction of the sifted key publicly disclosed to estimate
             the QBER (those bits are removed from the final key).
+        min_sample_size: minimum disclosed sample when ``sample_fraction`` is
+            non-zero and enough sifted bits exist. A useful lower bound keeps
+            short-key QBER estimates from being dominated by sampling noise.
         qber_threshold: QBER above which the key is deemed insecure (BB84's
             asymptotic bound is ~11 %).
+        privacy_ratio: final-key length divided by the candidate-key length used
+            for Toeplitz privacy amplification. The default 0.5 hashes two
+            candidate bits into one final bit.
         seed: seed for the (classical) random-number generator, for reproducibility.
     """
 
@@ -82,16 +92,22 @@ class QKD:
     #: rough kept-fraction after sifting, used only to size the raw block in keygen
     sift_efficiency = 0.5
 
-    def __init__(self, eavesdropper: bool = False, error_rate: float = 0.0,
+    def __init__(self, eve_prob: float = 0.0, error_rate: float = 0.0,
                  sample_fraction: float = 0.2, qber_threshold: float = 0.11,
+                 privacy_ratio: float = 0.5, min_sample_size: int = 128,
                  seed: Optional[int] = None):
+        assert 0.0 <= eve_prob <= 1.0, 'eve_prob must be in [0, 1]'
         assert 0.0 <= error_rate <= 1.0, 'error_rate must be in [0, 1]'
         assert 0.0 <= sample_fraction < 1.0, 'sample_fraction must be in [0, 1)'
         assert 0.0 <= qber_threshold <= 1.0, 'qber_threshold must be in [0, 1]'
-        self.eavesdropper = bool(eavesdropper)
+        assert 0.0 < privacy_ratio <= 1.0, 'privacy_ratio must be in (0, 1]'
+        assert int(min_sample_size) >= 1, 'min_sample_size must be >= 1'
+        self.eve_prob = float(eve_prob)
         self.error_rate = float(error_rate)
         self.sample_fraction = float(sample_fraction)
         self.qber_threshold = float(qber_threshold)
+        self.privacy_ratio = float(privacy_ratio)
+        self.min_sample_size = int(min_sample_size)
         self._rng = np.random.default_rng(seed)
         self._qvm = CPUQVM()
 
@@ -150,6 +166,47 @@ class QKD:
             return bit ^ 1
         return bit
 
+    def _eve_mask(self, n_raw: int) -> np.ndarray:
+        """Draw the rounds attacked by an intercept-resend Eve.
+
+        The exact endpoints avoid consuming random numbers when Eve is entirely
+        absent or present, while intermediate probabilities make an independent
+        Bernoulli decision for every transmitted qubit.
+        """
+        if self.eve_prob <= 0.0:
+            return np.zeros(n_raw, dtype=bool)
+        if self.eve_prob >= 1.0:
+            return np.ones(n_raw, dtype=bool)
+        return self._rng.random(n_raw) < self.eve_prob
+
+    def _privacy_amplification(self, key_bits, final_len: int) -> np.ndarray:
+        """Hash ``n`` candidate bits to ``final_len`` bits with a Toeplitz matrix.
+
+        A binary ``m x n`` Toeplitz matrix is fully described by ``m + n - 1``
+        random bits (one per diagonal). Multiplication is performed over GF(2).
+        This is a universal-hash privacy-amplification step; ``keygen`` controls
+        the compression ratio through :attr:`privacy_ratio`.
+        """
+        if isinstance(key_bits, str):
+            assert set(key_bits) <= {'0', '1'}, 'key_bits must be binary'
+            bits = np.fromiter((ch == '1' for ch in key_bits), dtype=np.uint8)
+        else:
+            bits = np.asarray(key_bits, dtype=np.uint8).reshape(-1) & 1
+        final_len = int(final_len)
+        assert final_len >= 1, 'final_len must be >= 1'
+        assert final_len <= bits.size, \
+            f'privacy amplification needs at least {final_len} candidate bits'
+
+        n = int(bits.size)
+        diagonals = self._rng.integers(
+            0, 2, size=n + final_len - 1, dtype=np.uint8)
+        out = np.empty(final_len, dtype=np.uint8)
+        for i in range(final_len):
+            start = final_len - 1 - i
+            row = diagonals[start:start + n]
+            out[i] = np.bitwise_xor.reduce(bits & row)
+        return out
+
     # ------------------------------------------------------------------ #
     # protocol hook + public API                                          #
     # ------------------------------------------------------------------ #
@@ -178,7 +235,9 @@ class QKD:
 
         # publicly disclose a random sample to estimate the QBER
         n_sample = int(round(self.sample_fraction * n_sift))
-        if (self.eavesdropper or self.error_rate > 0.0) and n_sift > 0:
+        if self.sample_fraction > 0.0 and n_sift > 1:
+            n_sample = max(n_sample, min(self.min_sample_size, n_sift - 1))
+        if (self.eve_prob > 0.0 or self.error_rate > 0.0) and n_sift > 0:
             n_sample = max(1, n_sample)
         if n_sift > 1:
             n_sample = min(n_sample, n_sift - 1)   # never disclose the whole key
@@ -208,26 +267,37 @@ class QKD:
     def keygen(self, nlen: int) -> str:
         """Generate a shared secret key of ``nlen`` bits (returned as a '0'/'1' string).
 
-        Raw qubits are transmitted in blocks until enough sifted bits accumulate.
+        Raw qubits are transmitted in blocks until enough candidate bits accumulate.
         If an eavesdropper is detected (QBER over threshold) a
-        :class:`QKDInsecureError` is raised and the key is discarded."""
+        :class:`QKDInsecureError` is raised and the key is discarded. The candidate
+        key is then compressed to exactly ``nlen`` bits by Toeplitz hashing."""
         assert int(nlen) >= 1, 'nlen must be >= 1'
         nlen = int(nlen)
 
-        # size a raw block from the expected sift efficiency and disclosure loss
-        yield_per_raw = max(self.sift_efficiency * (1.0 - self.sample_fraction), 1e-3)
-        block = int(nlen / yield_per_raw) + 32
+        # Privacy amplification consumes a longer candidate key and hashes it to
+        # the requested final length.
+        candidate_len = int(np.ceil(nlen / self.privacy_ratio))
 
-        key = ''
-        while len(key) < nlen:
+        candidate = ''
+        while len(candidate) < candidate_len:
+            # Size every block (including top-ups) to cover both proportional
+            # disclosure and the minimum parameter-estimation sample.
+            needed = candidate_len - len(candidate)
+            proportional_need = needed / max(1.0 - self.sample_fraction, 1e-3)
+            minimum_need = needed + (
+                self.min_sample_size if self.sample_fraction > 0.0 else 0)
+            sift_needed = max(proportional_need, minimum_need)
+            block = int(np.ceil(
+                sift_needed / max(self.sift_efficiency, 1e-3))) + 32
+
             res = self.distribute(block)
             if not res.secure:
                 raise QKDInsecureError(
                     f'{self.name}: estimated QBER {res.qber:.3f} exceeds threshold '
                     f'{self.qber_threshold:.3f} -- eavesdropping suspected, key discarded')
-            key += res.key
-            block = max(32, block // 2)   # top-ups can be smaller
-        return key[:nlen]
+            candidate += res.key
+        final = self._privacy_amplification(candidate[:candidate_len], nlen)
+        return _bits_to_str(final)
 
 
 def _bits_to_str(bits) -> str:

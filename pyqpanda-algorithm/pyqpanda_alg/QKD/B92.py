@@ -30,7 +30,8 @@ class B92(QKD):
         rng = self._rng
         a_bits = rng.integers(0, 2, n_raw)      # Alice's key bits
         b_basis = rng.integers(0, 2, n_raw)     # Bob's random measurement bases
-        e_basis = rng.integers(0, 2, n_raw) if self.eavesdropper else None
+        eve = self._eve_mask(n_raw)
+        e_basis = rng.integers(0, 2, n_raw) if np.any(eve) else None
 
         bob = np.zeros(n_raw, dtype=int)
         keep = np.zeros(n_raw, dtype=bool)
@@ -38,7 +39,7 @@ class B92(QKD):
             # bit 0 -> |0> (Z, value 0); bit 1 -> |+> (X, value 0)
             prep_basis = X_BASIS if a_bits[i] == 1 else Z_BASIS
             prep_bit = 0
-            if self.eavesdropper:
+            if eve[i]:
                 eve_bit = self._pm(prep_basis, prep_bit, int(e_basis[i]))
                 prep_basis, prep_bit = int(e_basis[i]), eve_bit
 
@@ -50,4 +51,6 @@ class B92(QKD):
                 bob[i], keep[i] = 0, True       # |-> in X rules out |+>  => bit 0
             # otherwise inconclusive -> discarded
 
-        return dict(alice=a_bits, bob=bob, keep=keep)
+        return dict(alice=a_bits, bob=bob, keep=keep,
+                    extra={'eve_intercepts': int(eve.sum()),
+                           'eve_rate': float(eve.mean())})

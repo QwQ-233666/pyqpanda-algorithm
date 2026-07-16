@@ -34,6 +34,7 @@ OUT_DIR = HERE / 'output'
 PROTOCOLS = [BB84, B92, E91, BBM92, SARG04]
 N_RAW = 6000
 THRESHOLD = 0.11
+EVE_PROB = 1.0
 
 
 def main():
@@ -42,7 +43,7 @@ def main():
     print('-' * 60)
     for P in PROTOCOLS:
         clean = P(seed=1).distribute(N_RAW)
-        eve = P(eavesdropper=True, seed=1).distribute(N_RAW)
+        eve = P(eve_prob=EVE_PROB, seed=1).distribute(N_RAW)
         names.append(P.__name__)
         sift.append(clean.sift_rate)
         qber_clean.append(clean.qber)
@@ -67,7 +68,8 @@ def main():
 
     w = 0.38
     ax2.bar([i - w / 2 for i in x], qber_clean, width=w, label='clean channel', color='#55a868')
-    ax2.bar([i + w / 2 for i in x], qber_eve, width=w, label='eavesdropper', color='#c44e52')
+    ax2.bar([i + w / 2 for i in x], qber_eve, width=w,
+            label=f'Eve intercepts {EVE_PROB:.0%}', color='#c44e52')
     ax2.axhline(THRESHOLD, ls='--', color='k', lw=1, label=f'security threshold {THRESHOLD:.0%}')
     ax2.set_xticks(list(x)); ax2.set_xticklabels(names, rotation=20)
     ax2.set_ylabel('QBER')

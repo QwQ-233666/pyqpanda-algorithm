@@ -34,14 +34,15 @@ class SARG04(QKD):
         send_val = rng.integers(0, 2, n_raw)      # which state within that basis
         decoy_val = rng.integers(0, 2, n_raw)     # decoy state (from the conjugate basis)
         b_basis = rng.integers(0, 2, n_raw)       # Bob's random measurement basis
-        e_basis = rng.integers(0, 2, n_raw) if self.eavesdropper else None
+        eve = self._eve_mask(n_raw)
+        e_basis = rng.integers(0, 2, n_raw) if np.any(eve) else None
 
         alice = send_basis.copy()                 # the key bit Alice intends
         bob = np.zeros(n_raw, dtype=int)
         keep = np.zeros(n_raw, dtype=bool)
         for i in range(n_raw):
             prep_basis, prep_bit = int(send_basis[i]), int(send_val[i])
-            if self.eavesdropper:
+            if eve[i]:
                 eve_bit = self._pm(prep_basis, prep_bit, int(e_basis[i]))
                 prep_basis, prep_bit = int(e_basis[i]), eve_bit
 
@@ -58,4 +59,6 @@ class SARG04(QKD):
             elif excl_sent and not excl_decoy:
                 bob[i], keep[i] = other_basis, True             # concluded the decoy (an error)
 
-        return dict(alice=alice, bob=bob, keep=keep)
+        return dict(alice=alice, bob=bob, keep=keep,
+                    extra={'eve_intercepts': int(eve.sum()),
+                           'eve_rate': float(eve.mean())})

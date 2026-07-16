@@ -32,14 +32,14 @@ class TestSARG04:
         r = SARG04(seed=3).distribute(4000)
         assert abs(r.sift_rate - 0.25) < 0.05    # exclusion sifting keeps ~1/4
 
-    def test_eavesdropper_raises_qber(self):
-        r = SARG04(eavesdropper=True, seed=4).distribute(4000)
+    def test_eve_probability_raises_qber(self):
+        r = SARG04(eve_prob=1.0, seed=4).distribute(4000)
         assert r.qber > 0.12
         assert r.secure is False
 
-    def test_keygen_aborts_under_eavesdropper(self):
+    def test_keygen_aborts_under_full_interception(self):
         with pytest.raises(QKDInsecureError):
-            SARG04(eavesdropper=True, seed=5).keygen(64)
+            SARG04(eve_prob=1.0, seed=5).keygen(64)
 
 
 if __name__ == '__main__':

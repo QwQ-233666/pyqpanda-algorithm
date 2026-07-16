@@ -39,15 +39,15 @@ class TestE91:
         assert r.extra['chsh_S'] > 2.4
         assert r.extra['chsh_S'] <= 2 * math.sqrt(2) + 0.15   # within statistics of Tsirelson
 
-    def test_eavesdropper_breaks_entanglement(self):
-        r = E91(eavesdropper=True, seed=4).distribute(6000)
+    def test_eve_probability_breaks_entanglement(self):
+        r = E91(eve_prob=1.0, seed=4).distribute(6000)
         assert r.qber > 0.12
         assert r.secure is False
         assert r.extra['chsh_S'] < 2.0           # CHSH falls back below the classical bound
 
-    def test_keygen_aborts_under_eavesdropper(self):
+    def test_keygen_aborts_under_full_interception(self):
         with pytest.raises(QKDInsecureError):
-            E91(eavesdropper=True, seed=5).keygen(48)
+            E91(eve_prob=1.0, seed=5).keygen(48)
 
 
 if __name__ == '__main__':

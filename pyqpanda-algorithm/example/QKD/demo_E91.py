@@ -40,15 +40,15 @@ def main():
     print('=' * 64)
 
     report('clean channel', E91(seed=42), 6000)
-    report('eavesdropper on the line', E91(eavesdropper=True, seed=42), 6000)
+    report('Eve intercepts every round', E91(eve_prob=1.0, seed=42), 6000)
 
     print('\n[keygen over a clean channel]')
     key = E91(seed=7).keygen(128)
-    print(f'  128-bit shared key: {key}')
+    print(f'  128-bit privacy-amplified key: {key}')
 
-    print('\n[keygen with an eavesdropper -> aborts]')
+    print('\n[keygen with full interception -> aborts]')
     try:
-        E91(eavesdropper=True, seed=7).keygen(128)
+        E91(eve_prob=1.0, seed=7).keygen(128)
     except QKDInsecureError as e:
         print(f'  {e}')
 

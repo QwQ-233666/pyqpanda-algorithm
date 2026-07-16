@@ -25,12 +25,13 @@ class BB84(QKD):
         a_bits = rng.integers(0, 2, n_raw)      # Alice's random bits
         a_basis = rng.integers(0, 2, n_raw)     # Alice's random bases
         b_basis = rng.integers(0, 2, n_raw)     # Bob's random bases
-        e_basis = rng.integers(0, 2, n_raw) if self.eavesdropper else None
+        eve = self._eve_mask(n_raw)
+        e_basis = rng.integers(0, 2, n_raw) if np.any(eve) else None
 
         bob = np.empty(n_raw, dtype=int)
         for i in range(n_raw):
             prep_basis, prep_bit = int(a_basis[i]), int(a_bits[i])
-            if self.eavesdropper:
+            if eve[i]:
                 # Eve measures in a random basis and resends what she found
                 eve_bit = self._pm(prep_basis, prep_bit, int(e_basis[i]))
                 prep_basis, prep_bit = int(e_basis[i]), eve_bit
@@ -38,4 +39,6 @@ class BB84(QKD):
             bob[i] = self._maybe_flip(out)
 
         keep = a_basis == b_basis                # sift: matching bases
-        return dict(alice=a_bits, bob=bob, keep=keep)
+        return dict(alice=a_bits, bob=bob, keep=keep,
+                    extra={'eve_intercepts': int(eve.sum()),
+                           'eve_rate': float(eve.mean())})

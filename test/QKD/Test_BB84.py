@@ -32,14 +32,20 @@ class TestBB84:
         r = BB84(seed=3).distribute(4000)
         assert abs(r.sift_rate - 0.5) < 0.05     # bases agree ~half the time
 
-    def test_eavesdropper_raises_qber(self):
-        r = BB84(eavesdropper=True, seed=4).distribute(4000)
+    def test_eve_probability_raises_qber(self):
+        r = BB84(eve_prob=1.0, seed=4).distribute(4000)
         assert r.qber > 0.12                     # intercept-resend -> ~25 %
         assert r.secure is False
+        assert r.extra['eve_rate'] == 1.0
 
-    def test_keygen_aborts_under_eavesdropper(self):
+    def test_keygen_aborts_under_full_interception(self):
         with pytest.raises(QKDInsecureError):
-            BB84(eavesdropper=True, seed=5).keygen(64)
+            BB84(eve_prob=1.0, seed=5).keygen(64)
+
+    def test_partial_eve_probability_is_applied_per_round(self):
+        r = BB84(eve_prob=0.5, seed=10).distribute(6000)
+        assert abs(r.extra['eve_rate'] - 0.5) < 0.03
+        assert 0.07 < r.qber < 0.18              # expected QBER ~= eve_prob / 4
 
     def test_bb84_bits_are_reproducible(self):
         # clean-channel sifted key is fixed by the classical choices -> reproducible

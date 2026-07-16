@@ -40,7 +40,8 @@ class E91(QKD):
         rng = self._rng
         a_idx = rng.integers(0, 3, n_raw)       # Alice's setting choices
         b_idx = rng.integers(0, 3, n_raw)       # Bob's setting choices
-        e_ang = rng.choice(EVE_ANGLES, size=n_raw) if self.eavesdropper else None
+        eve = self._eve_mask(n_raw)
+        e_ang = rng.choice(EVE_ANGLES, size=n_raw) if np.any(eve) else None
 
         alice = np.empty(n_raw, dtype=int)
         bob = np.empty(n_raw, dtype=int)
@@ -52,7 +53,7 @@ class E91(QKD):
 
         for i in range(n_raw):
             ai, bi = int(a_idx[i]), int(b_idx[i])
-            if self.eavesdropper:
+            if eve[i]:
                 a_out, eve_out = self._bell_measure(A_ANGLES[ai], float(e_ang[i]))
                 b_out = self._resend(float(e_ang[i]), eve_out, B_ANGLES[bi])
             else:
@@ -72,4 +73,6 @@ class E91(QKD):
             S += _CHSH_SIGN[s] * E
 
         return dict(alice=alice, bob=bob, keep=keep,
-                    extra={'chsh_S': float(S)})
+                    extra={'chsh_S': float(S),
+                           'eve_intercepts': int(eve.sum()),
+                           'eve_rate': float(eve.mean())})

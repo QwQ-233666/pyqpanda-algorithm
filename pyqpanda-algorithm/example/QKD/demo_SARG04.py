@@ -39,15 +39,15 @@ def main():
     print('=' * 64)
 
     report('clean channel', SARG04(seed=42), 3000)
-    report('eavesdropper on the line', SARG04(eavesdropper=True, seed=42), 3000)
+    report('Eve intercepts every round', SARG04(eve_prob=1.0, seed=42), 3000)
 
     print('\n[keygen over a clean channel]')
     key = SARG04(seed=7).keygen(128)
-    print(f'  128-bit shared key: {key}')
+    print(f'  128-bit privacy-amplified key: {key}')
 
-    print('\n[keygen with an eavesdropper -> aborts]')
+    print('\n[keygen with full interception -> aborts]')
     try:
-        SARG04(eavesdropper=True, seed=7).keygen(128)
+        SARG04(eve_prob=1.0, seed=7).keygen(128)
     except QKDInsecureError as e:
         print(f'  {e}')
 
